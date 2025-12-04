@@ -1,5 +1,5 @@
-const fs = require('fs');
-const yaml = require('yaml');
+import { writeFileSync } from 'fs';
+import { stringify } from 'yaml';
 
 function generateLargeObject(targetSize, format) {
 	// Target 98% of specified size to stay slightly under
@@ -24,7 +24,37 @@ function generateLargeObject(targetSize, format) {
 		};
 	}
 
-	// Build object until target size is reached
+	// Generate a single document for YAML
+	function generateDocument(docNumber, totalDocs = null) {
+		const doc = {
+			documentId: docNumber,
+			timestamp: new Date().toISOString(),
+			data: {
+				field1: `Document ${docNumber} - Field 1: ${'x'.repeat(500)}`,
+				field2: `Document ${docNumber} - Field 2: ${'y'.repeat(500)}`,
+				field3: `Document ${docNumber} - Field 3: ${'z'.repeat(500)}`,
+				metadata: {
+					author: `Author ${docNumber}`,
+					tags: [`tag${docNumber}`, `category${docNumber % 10}`, 'general'],
+					description: `This is document number ${docNumber} with some padding: ${'a'.repeat(300)}`
+				},
+				content: {
+					title: `Title for document ${docNumber}`,
+					body: `Body content for document ${docNumber}: ${'b'.repeat(800)}`,
+					footer: `Footer for document ${docNumber}: ${'c'.repeat(200)}`
+				}
+			}
+		};
+
+		// Add totalDocuments field to the first document
+		if (docNumber === 1 && totalDocs !== null) {
+			doc.totalDocuments = totalDocs;
+		}
+
+		return doc;
+	}
+
+	// Build object until target size is reached (for JSON - deep nesting)
 	function buildToTargetSize() {
 		let root = generateLevelData(0);
 		let current = root;
@@ -33,31 +63,23 @@ function generateLargeObject(targetSize, format) {
 		let lastValidDepth = 0;
 
 		while (true) {
-			// Serialize current state to check size
-			const serialized = formatLower === 'json'
-				? JSON.stringify(root, null, 2)
-				: yaml.stringify(root);
-
+			const serialized = JSON.stringify(root, null, 2);
 			const currentBytes = getByteSize(serialized);
 
 			if (currentBytes >= TARGET_BYTES) {
-				// Use the last valid state that was under target
 				if (lastValidRoot) {
 					return { root: lastValidRoot, depth: lastValidDepth };
 				}
 				break;
 			}
 
-			// Save current state as last valid
-			lastValidRoot = JSON.parse(JSON.stringify(root)); // Deep clone
+			lastValidRoot = JSON.parse(JSON.stringify(root));
 			lastValidDepth = depth;
 
-			// Add another nested level
 			depth++;
 			current.nested = generateLevelData(depth);
 			current = current.nested;
 
-			// Safety check to prevent infinite loops
 			if (depth > 100000) {
 				console.warn('Reached maximum depth limit');
 				break;
@@ -67,7 +89,43 @@ function generateLargeObject(targetSize, format) {
 		return { root, depth };
 	}
 
-	// Find deepest path in the object
+	// Build multiple YAML documents until target size is reached
+	function buildYamlDocuments() {
+		const documents = [];
+		let docNumber = 0;
+
+		while (true) {
+			docNumber++;
+			// Generate document without totalDocuments first
+			documents.push(generateDocument(docNumber));
+
+			// Serialize all documents to check size
+			const serialized = documents.map(doc => stringify(doc)).join('---\n');
+			const currentBytes = getByteSize(serialized);
+
+			if (currentBytes >= TARGET_BYTES) {
+				// Remove the last document if we exceeded the target
+				if (documents.length > 1) {
+					documents.pop();
+				}
+				break;
+			}
+
+			// Safety check
+			if (docNumber > 1000000) {
+				console.warn('Reached maximum document limit');
+				break;
+			}
+		}
+
+		// Now update the first document with the total count
+		const finalCount = documents.length;
+		documents[0] = generateDocument(1, finalCount);
+
+		return { documents, count: finalCount };
+	}
+
+	// Find deepest path in the object (for JSON)
 	function findDeepestPath(obj, currentPath = []) {
 		let deepestPath = currentPath;
 		let maxDepth = currentPath.length;
@@ -91,21 +149,28 @@ function generateLargeObject(targetSize, format) {
 	console.log(`Generating ${formatLower.toUpperCase()} object with target size: ~${targetSize}MB...`);
 	const startTime = Date.now();
 
-	const { root: generatedObject } = buildToTargetSize();
-
-	// Find deepest path
-	const deepestPath = findDeepestPath(generatedObject);
-	const deepestPathString = '.' + deepestPath.join('.');
-
-	// Add the deepest path to the root object
-	generatedObject.deepestPath = deepestPathString;
-
-	// Convert to requested format
 	let output;
+	let deepestPathString;
+	let depth;
+
 	if (formatLower === 'json') {
+		// JSON: Use deep nesting approach
+		const { root: generatedObject } = buildToTargetSize();
+		const deepestPath = findDeepestPath(generatedObject);
+		deepestPathString = '.' + deepestPath.join('.');
+		depth = deepestPath.length;
+
+		generatedObject.deepestPath = deepestPathString;
 		output = JSON.stringify(generatedObject, null, 2);
 	} else {
-		output = yaml.stringify(generatedObject);
+		// YAML: Use multiple documents approach
+		const { documents, count } = buildYamlDocuments();
+
+		// Join documents with YAML document separator
+		output = documents.map(doc => stringify(doc)).join('---\n');
+
+		deepestPathString = `Multiple documents (${count} total)`;
+		depth = count;
 	}
 
 	// Get actual size
@@ -114,17 +179,22 @@ function generateLargeObject(targetSize, format) {
 
 	console.log(`Generated in ${generationTime}s`);
 	console.log(`Actual size: ${actualSize}MB`);
-	console.log(`Deepest path (depth ${deepestPath.length}): ${deepestPathString}`);
+
+	if (formatLower === 'json') {
+		console.log(`Deepest path (depth ${depth}): ${deepestPathString}`);
+	} else {
+		console.log(`Total documents: ${depth}`);
+	}
 
 	// Save to file
 	const fileName = `result_${targetSize}MB.${formatLower}`;
-	fs.writeFileSync(fileName, output, 'utf8');
+	writeFileSync(fileName, output, 'utf8');
 	console.log(`File saved as: ${fileName}`);
 
 	return {
 		output: output,
 		deepestPath: deepestPathString,
-		depth: deepestPath.length,
+		depth: depth,
 		actualSizeMB: parseFloat(actualSize),
 		format: formatLower,
 		fileName: fileName
@@ -142,4 +212,8 @@ if (!format || !size) {
 }
 
 const result = generateLargeObject(size, format);
-console.log('Deepest path:', result.deepestPath);
+if (result.format === 'json') {
+	console.log('Deepest path:', result.deepestPath);
+} else {
+	console.log('Document count:', result.depth);
+}
