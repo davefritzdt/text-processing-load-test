@@ -2,7 +2,8 @@ const fs = require('fs');
 const yaml = require('yaml');
 
 function generateLargeObject(targetSize, format) {
-	const TARGET_BYTES = targetSize * 1024 * 1024; // Convert MB to bytes
+	// Target 98% of specified size to stay slightly under
+	const TARGET_BYTES = targetSize * 1024 * 1024 * 0.98;
 
 	// Validate format
 	if (!['json', 'yaml'].includes(format.toLowerCase())) {
@@ -28,6 +29,8 @@ function generateLargeObject(targetSize, format) {
 		let root = generateLevelData(0);
 		let current = root;
 		let depth = 0;
+		let lastValidRoot = null;
+		let lastValidDepth = 0;
 
 		while (true) {
 			// Serialize current state to check size
@@ -38,8 +41,16 @@ function generateLargeObject(targetSize, format) {
 			const currentBytes = getByteSize(serialized);
 
 			if (currentBytes >= TARGET_BYTES) {
+				// Use the last valid state that was under target
+				if (lastValidRoot) {
+					return { root: lastValidRoot, depth: lastValidDepth };
+				}
 				break;
 			}
+
+			// Save current state as last valid
+			lastValidRoot = JSON.parse(JSON.stringify(root)); // Deep clone
+			lastValidDepth = depth;
 
 			// Add another nested level
 			depth++;
@@ -53,7 +64,7 @@ function generateLargeObject(targetSize, format) {
 			}
 		}
 
-		return root;
+		return { root, depth };
 	}
 
 	// Find deepest path in the object
@@ -77,10 +88,10 @@ function generateLargeObject(targetSize, format) {
 	}
 
 	// Generate the object
-	console.log(`Generating ${formatLower.toUpperCase()} object with target size: ${targetSize}MB...`);
+	console.log(`Generating ${formatLower.toUpperCase()} object with target size: ~${targetSize}MB...`);
 	const startTime = Date.now();
 
-	const generatedObject = buildToTargetSize();
+	const { root: generatedObject } = buildToTargetSize();
 
 	// Find deepest path
 	const deepestPath = findDeepestPath(generatedObject);
